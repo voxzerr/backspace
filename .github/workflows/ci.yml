@@ -490,12 +490,19 @@ jobs:
 
       - name: macOS + Python 3.9 must resolve wheel-only
         run: |
-          # rumps is sdist-only on PyPI for every version, so it cannot take
-          # part in an --only-binary run. It is pure Python and builds with no
-          # compiler, so it is not part of the risk being tested here.
+          # Only the pyobjc pins are on trial here: the claim is that they
+          # resolve to real cp39 macOS wheels with no compiler. Two packages
+          # are deliberately left out, because they are not that risk and each
+          # would break this cross-platform resolve for an unrelated reason:
+          #   rumps   — sdist-only on PyPI, so it cannot join an --only-binary
+          #             run at all. Pure Python, builds with no compiler.
+          #   pynput  — depends on evdev under `"linux" in sys_platform`, and
+          #             this job's host is Linux, so pip evaluates that marker
+          #             against the host and drags in evdev, which has no macOS
+          #             wheel. A host artefact, not a fact about our pins. The
+          #             real macOS install is proven by the requirements-install
+          #             job that runs on macos-latest.
           cat > /tmp/probe.txt <<'EOF'
-          pyspellchecker>=0.8
-          pynput>=1.7
           pyobjc-core>=10,<11
           pyobjc-framework-Cocoa>=10,<11
           pyobjc-framework-Quartz>=10,<11
