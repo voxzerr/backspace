@@ -1,0 +1,124 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backspace"
+version = "0.1.0"
+description = "A typing-correction utility: fix a selection with a hotkey, or as you type."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+
+# ---------------------------------------------------------------------------
+# Runtime dependencies.
+#
+# These mirror requirements.txt, which is still the documented install path and
+# still works on its own (`pip install -r requirements.txt`). Nothing here
+# replaces it; this file exists so that `pip install -e .` behaves identically
+# on all three platforms without the user having to pick a command.
+#
+# Markers, not extras. An extra like `backspace[macos]` is NOT platform-gated:
+# `pip install backspace[macos]` on Linux installs happily and then fails at
+# import. Markers are evaluated by pip automatically and cannot be selected
+# wrongly, so every platform-specific dependency below is marker-gated.
+# ---------------------------------------------------------------------------
+dependencies = [
+  # Platform-free core. engine.py imports this and nothing else third-party.
+  "pyspellchecker>=0.8",
+
+  # The input layer on all three platforms. Pulls python-xlib on Linux and
+  # pyobjc on macOS by itself.
+  "pynput>=1.7",
+
+  # --- macOS ---------------------------------------------------------------
+  "rumps>=0.4 ; sys_platform == 'darwin'",
+
+  # pyobjc pin, deliberately conservative and load-bearing on the dev machine.
+  #
+  # That machine is macOS on Intel where /usr/bin/python3 is 3.9.6 and is the
+  # only interpreter, with no Xcode and no Homebrew. If pip resolves a pyobjc
+  # that has no cp39 wheel it falls back to the sdist, the sdist needs a
+  # compiler, and the install fails outright.
+  #
+  # Verified against the PyPI JSON API on 2026-07-20 (pyobjc-core, and the
+  # same pattern holds across all five pyobjc distributions):
+  #
+  #   10.3.2  Requires-Python >=3.8   cp39 wheel: yes
+  #   11.0    Requires-Python >=3.8   cp39 wheel: yes
+  #   11.1    Requires-Python >=3.8   cp39 wheel: yes
+  #   12.0    Requires-Python >=3.8   cp39 wheel: NO   <-- the trap
+  #   12.1    Requires-Python >=3.10  cp39 wheel: no   (correctly skipped)
+  #
+  # So the version that actually breaks a 3.9 install is 12.0: its metadata
+  # advertises 3.8+ support it does not ship wheels for, so pip selects it,
+  # finds no wheel, and reaches for the compiler that isn't there. 12.1 fixed
+  # the metadata and pip skips it correctly on 3.9.
+  #
+  # `<11` is therefore stricter than strictly necessary — `<12` would also
+  # keep 3.9 on a wheel, and would additionally allow 11.1. `<11` is kept
+  # here because it is the pin the dev machine is known-good on (10.3.2 is
+  # what is installed and tested there) and because forfeiting 11.x costs
+  # this project nothing. Revisit only with a 3.9 install test on real
+  # hardware, not from metadata alone.
+  "pyobjc-core>=10,<11 ; sys_platform == 'darwin' and python_version < '3.10'",
+  "pyobjc-framework-Cocoa>=10,<11 ; sys_platform == 'darwin' and python_version < '3.10'",
+  "pyobjc-framework-Quartz>=10,<11 ; sys_platform == 'darwin' and python_version < '3.10'",
+  "pyobjc-framework-ApplicationServices>=10,<11 ; sys_platform == 'darwin' and python_version < '3.10'",
+
+  # On 3.10+ there is no wheel gap, so no upper bound. Only Cocoa is named:
+  # pynput declares Quartz and ApplicationServices, rumps declares Cocoa, and
+  # the rest of the closure arrives transitively.
+  "pyobjc-framework-Cocoa>=10 ; sys_platform == 'darwin' and python_version >= '3.10'",
+
+  # --- Windows and Linux ----------------------------------------------------
+  # Both platforms import pystray lazily for the tray, and pystray needs
+  # PIL.Image for the icon. Not just the icon: platform_win.py and
+  # platform_linux.py gate caps.notifications on the same probe, and on the
+  # hotkey path notifications are the only way the user is told "Select some
+  # text first" or what was changed. Marker-gating these to Linux left Windows
+  # silently mute, so the marker is `!= darwin`, matching requirements.txt.
+  #
+  # Still optional at runtime: both degrade to "no tray, no notifications" when
+  # the system GI typelibs are missing, which is why the tray is never
+  # load-bearing — the settings page on 127.0.0.1:8765 is the real UI.
+  "pystray>=0.19 ; sys_platform != 'darwin'",
+  "Pillow>=9 ; sys_platform != 'darwin'",
+]
+
+# ---------------------------------------------------------------------------
+# Extras are reserved for things that are genuinely optional on every platform
+# — never for platform selection, which markers already handle correctly.
+# ---------------------------------------------------------------------------
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+# app.py's main(argv=None) -> int is exactly the console-script contract: it
+# parses argv, returns an exit code, and importing app has no GUI side effects.
+# `python3 app.py` from the source tree keeps working either way.
+[project.scripts]
+backspace = "app:main"
+
+[tool.setuptools]
+# Flat layout with several top-level modules. Without this, setuptools'
+# auto-discovery refuses to build ("Multiple top-level modules discovered").
+# Listed explicitly so a new platform module is a deliberate addition.
+py-modules = [
+  "app",
+  "backend",
+  "engine",
+  "platform_base",
+  "platform_linux",
+  "platform_mac",
+  "platform_win",
+  "server",
+]
+
+# server.py reads settings.html from Path(__file__).parent, so the HTML must
+# sit next to the modules. This works for `pip install -e .` (the files stay
+# in the source tree) which is what CI and the documented install both use.
+# A non-editable wheel install would not place settings.html on that path —
+# see the CI notes; packaging as a real package directory is the fix, and is
+# out of scope for this file.
+[tool.setuptools.data-files]
+"." = ["settings.html"]

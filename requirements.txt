@@ -1,0 +1,49 @@
+# Backspace — runtime dependencies for macOS, Windows and Linux.
+#
+# Markers do the platform selection. Installing this file on any of the three
+# gives you a working install; nothing here fails on a platform it is not for.
+# Everything platform-specific is optional at import time — app.py degrades to
+# a NullBackend and still runs `--fix`, `--doctor` and the settings page.
+
+# --- everywhere ------------------------------------------------------------
+
+pyspellchecker>=0.8
+pynput>=1.7
+
+# --- macOS -----------------------------------------------------------------
+
+rumps>=0.4 ; sys_platform == "darwin"
+
+# pyobjc 11+ ships no wheels for CPython 3.9 and building it from source needs
+# full Xcode, which most machines do not have. macOS still ships 3.9 as
+# /usr/bin/python3, so the pin is load-bearing there and only there.
+pyobjc-core>=10,<11 ; sys_platform == "darwin" and python_version < "3.10"
+pyobjc-framework-Cocoa>=10,<11 ; sys_platform == "darwin" and python_version < "3.10"
+pyobjc-framework-Quartz>=10,<11 ; sys_platform == "darwin" and python_version < "3.10"
+pyobjc-framework-ApplicationServices>=10,<11 ; sys_platform == "darwin" and python_version < "3.10"
+
+pyobjc-framework-Cocoa>=10 ; sys_platform == "darwin" and python_version >= "3.10"
+pyobjc-framework-Quartz>=10 ; sys_platform == "darwin" and python_version >= "3.10"
+
+# --- Windows and Linux: the tray icon --------------------------------------
+#
+# pystray needs Pillow for the icon image. Both are optional: without them the
+# tray is gone and `python3 app.py --headless` is the whole app. On Linux
+# pystray also needs a desktop with a status area, which no server has.
+
+pystray>=0.19 ; sys_platform != "darwin"
+Pillow>=9 ; sys_platform != "darwin"
+
+# --- Linux, not installable with pip ---------------------------------------
+#
+# The clipboard and the frontmost-app lookup shell out to command-line tools,
+# because there is no stable in-process API for either on X11. Install with
+# your package manager:
+#
+#   X11:      xclip (or xsel), xdotool, libnotify-bin
+#   Wayland:  wl-clipboard, libnotify-bin
+#
+# Wayland deliberately gets clipboard support and nothing else: no compositor
+# lets an ordinary application register a global hotkey or watch keystrokes,
+# and pynput constructs happily there and then never fires. Run `python3 app.py
+# --doctor` to see exactly what your session supports.

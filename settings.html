@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- server.py rewrites this with the per-process token before serving -->
+<meta name="csrf-token" content="">
+<title>Backspace</title>
+<style>
+  :root {
+    --paper:    #FBFAF8;
+    --graphite: #1E1D22;
+    --muted:    #6E6A63;
+    --rule:     #E3DFD7;
+    --mark:     #C8433C;   /* what was wrong */
+    --ink:      #2B4A9B;   /* what it became */
+    --serif: Baskerville, "Iowan Old Style", Charter, Georgia, serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--graphite);
+    font-family: var(--mono); font-size: 13px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .sheet { max-width: 760px; margin: 0 auto; padding: 56px 32px 96px; }
+
+  /* --- hero: the manuscript line ------------------------------------- */
+  .wordmark {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--muted);
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .proof {
+    font-family: var(--serif); font-size: 27px; line-height: 2.4;
+    margin: 40px 0 8px; min-height: 130px;
+  }
+  .proof .w { position: relative; }
+  .proof del {
+    text-decoration: none; color: var(--mark);
+    background: linear-gradient(var(--mark), var(--mark)) center/100% 1px no-repeat;
+  }
+  .proof ins {
+    position: absolute; left: 0; bottom: 88%; white-space: nowrap;
+    text-decoration: none; color: var(--ink); font-size: 15px;
+    font-family: var(--serif); font-style: italic;
+    animation: land .28s ease-out;
+  }
+  .proof ins::after {
+    content: ""; position: absolute; left: 2px; right: 2px; bottom: -3px;
+    height: 4px; border-left: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink); opacity: .45;
+  }
+  @keyframes land { from { opacity: 0; transform: translateY(4px); } }
+  @media (prefers-reduced-motion: reduce) { .proof ins { animation: none; } }
+
+  /* --- rows ------------------------------------------------------------ */
+  section { border-top: 1px solid var(--rule); padding: 22px 0; }
+  .row { display: grid; grid-template-columns: 150px 1fr; gap: 24px; }
+  .label { color: var(--muted); font-size: 11px; letter-spacing: .1em;
+           text-transform: uppercase; padding-top: 6px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+  h2 { all: unset; display: block; font-family: var(--serif);
+       font-size: 19px; margin-bottom: 4px; }
+
+  textarea, input[type=text] {
+    width: 100%; background: transparent; color: var(--graphite);
+    border: 1px solid var(--rule); border-radius: 2px; padding: 10px 12px;
+    font-family: var(--mono); font-size: 13px; line-height: 1.6; resize: vertical;
+  }
+  textarea:focus, input:focus { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+  .modes { display: flex; gap: 0; border: 1px solid var(--rule); border-radius: 2px;
+           width: fit-content; overflow: hidden; }
+  .modes button {
+    all: unset; padding: 7px 14px; cursor: pointer; font-family: var(--mono);
+    font-size: 12px; border-right: 1px solid var(--rule); color: var(--muted);
+  }
+  .modes button:last-child { border-right: 0; }
+  .modes button[aria-pressed="true"] { background: var(--graphite); color: var(--paper); }
+  .modes button:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+
+  .switch { display: flex; align-items: center; gap: 10px; cursor: pointer;
+           position: relative; }
+  .switch input { position: absolute; opacity: 0; }
+  .track { width: 34px; height: 19px; border: 1px solid var(--graphite);
+           border-radius: 10px; position: relative; transition: background .15s; }
+  .track::after { content: ""; position: absolute; top: 2px; left: 2px;
+    width: 13px; height: 13px; border-radius: 50%; background: var(--graphite);
+    transition: transform .15s; }
+  input:checked + .track { background: var(--graphite); }
+  input:checked + .track::after { transform: translateX(15px); background: var(--paper); }
+  input:focus-visible + .track { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .switch.off { cursor: default; opacity: .5; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { border: 1px solid var(--rule); border-radius: 2px; padding: 3px 8px;
+          font-size: 12px; display: flex; gap: 7px; align-items: center; }
+  .chip button { all: unset; cursor: pointer; color: var(--muted); }
+  .chip button:hover { color: var(--mark); }
+
+  .status { display: flex; align-items: center; gap: 8px; color: var(--muted);
+            font-size: 12px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mark); }
+  .dot.on { background: var(--ink); }
+  kbd { font-family: var(--mono); border: 1px solid var(--rule); border-bottom-width: 2px;
+        border-radius: 3px; padding: 1px 5px; font-size: 12px; }
+  footer { color: var(--muted); font-size: 12px; padding-top: 22px;
+           border-top: 1px solid var(--rule); display: flex; justify-content: space-between; }
+  @media (max-width: 620px) {
+    .row { grid-template-columns: 1fr; gap: 8px; }
+    .proof { font-size: 21px; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <div class="wordmark">
+    <span>Backspace</span>
+    <span id="count">—</span>
+  </div>
+
+  <div class="proof" id="proof" aria-live="polite"></div>
+
+  <section>
+    <div class="row">
+      <div class="label">Try it</div>
+      <div>
+        <textarea id="input" rows="3" spellcheck="false"
+          placeholder="Type badly here.">i cant beleive this actualy works, its basiclly reading what i type adn fixing it</textarea>
+        <p class="hint" id="note"></p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="row">
+      <div class="label">Correction</div>
+      <div>
+        <h2>How hard should it push?</h2>
+        <div class="modes" id="modes" role="group" aria-label="Correction mode"></div>
+        <p class="hint" id="modehint"></p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="row">
+      <div class="label">Hotkey</div>
+      <div>
+        <h2>Fix whatever is selected</h2>
+        <p class="hint">Select text in any app and press <kbd id="hk">—</kbd>.
+          It is replaced in place. Your clipboard is put back afterwards.</p>
+        <input type="text" id="hotkey" spellcheck="false" style="margin-top:10px;max-width:260px">
+        <p class="hint">Written as pynput sees it, like
+          <code>&lt;alt&gt;+&lt;space&gt;</code>. Restart after changing.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="row">
+      <div class="label">As you type</div>
+      <div>
+        <h2>Fix each sentence when I finish it</h2>
+        <label class="switch" id="autoswitch">
+          <input type="checkbox" id="auto" disabled><span class="track"></span>
+          <span id="autolabel">Off</span>
+        </label>
+        <p class="hint" id="autohint">Only the offline fixes run here, so it is instant.</p>
+        <input type="text" id="addapp" spellcheck="false"
+               placeholder="add an app, press enter" style="max-width:260px;margin-top:10px">
+        <div class="chips" id="blocklist"></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="row">
+      <div class="label">Model</div>
+      <div>
+        <h2>Used by clean up and professional</h2>
+        <input type="text" id="model" spellcheck="false" style="max-width:260px">
+        <div class="status" style="margin-top:10px">
+          <span class="dot" id="dot"></span><span id="modelstate">checking…</span>
+        </div>
+        <p class="hint">Runs locally through Ollama. Nothing you type leaves the machine.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="row">
+      <div class="label">Never change</div>
+      <div>
+        <h2>Words it should leave alone</h2>
+        <input type="text" id="addword" spellcheck="false"
+               placeholder="add a word, press enter" style="max-width:260px">
+        <div class="chips" id="allowlist"></div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Settings save as you change them.</span>
+    <span id="modelnote"></span>
+  </footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const setValue = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+const HINTS = {
+  fix: "Offline. Typos, capitals, apostrophes, spacing. Never rewrites you.",
+  clean: "Offline fixes, then the model tidies grammar while keeping your voice.",
+  polish: "Offline fixes, then the model tightens it for work writing."
+};
+// the password-field guard is macOS-only, so it is claimed only where the
+// backend says as-you-type is real, never in the markup everyone is served
+const AUTO_BASE = $("autohint").textContent;
+const AUTO_SKIPS = " It skips password fields, anything that looks like code, and the apps below.";
+// said when the backend refuses but does not say why: an answer we could not
+// get is still a reason to leave the switch alone
+const NO_REASON = "This system did not say whether it can watch typing safely, so it stays off.";
+let config = {}, timer;
+
+// --- api: every call carries the token this page was served with ------------
+const TOKEN = document.querySelector('meta[name="csrf-token"]').content;
+
+async function api(path, body) {
+  const init = {headers: {"X-Backspace-Token": TOKEN}};
+  if (body !== undefined) {
+    init.method = "POST";
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, init);
+  if (!r.ok) throw new Error(path + " " + r.status);
+  return r.json();
+}
+
+async function load() {
+  const s = await api("/api/state");
+  config = s.config;
+  $("count").textContent = s.count ? s.count + (s.count === 1 ? " fix" : " fixes") : "";
+  setValue("hotkey", config.hotkey);
+  // the backend knows its own platform's glyphs; we only print what it sends
+  $("hk").textContent = s.hotkey_pretty || config.hotkey;
+  setValue("model", config.model);
+
+  const ok = s.as_you_type_ok === true;
+  $("auto").disabled = !ok;
+  $("autoswitch").classList.toggle("off", !ok);
+  $("auto").checked = ok && config.as_you_type;
+  $("autolabel").textContent = !ok ? "Not available here"
+      : config.as_you_type ? "On" : "Off";
+  $("autohint").textContent = ok ? AUTO_BASE + AUTO_SKIPS : (s.as_you_type_why || NO_REASON);
+  $("dot").className = "dot" + (s.model_ready ? " on" : "");
+  $("modelstate").textContent = s.model_ready ? config.model + " is running"
+      : "no local model found";
+  $("modelnote").textContent = s.model_ready ? "" : "run: ollama pull " + config.model;
+
+  $("modes").innerHTML = Object.entries(s.modes).map(([k, v]) =>
+    `<button data-mode="${k}" aria-pressed="${k === config.mode}">${v}</button>`).join("");
+  $("modes").querySelectorAll("button").forEach(b =>
+    b.onclick = () => { config.mode = b.dataset.mode; save({mode: b.dataset.mode}); load(); preview(); });
+  $("modehint").textContent = HINTS[config.mode];
+
+  chips("blocklist", config.blocklist, true);
+  chips("allowlist", config.allowlist, true);
+}
+
+function chips(field, words, removable) {
+  $(field).innerHTML = words.map((w, i) =>
+    `<span class="chip">${w}${removable ? `<button data-i="${i}" aria-label="Remove ${w}">×</button>` : ""}</span>`
+  ).join("") || `<span class="hint">nothing yet</span>`;
+  $(field).querySelectorAll("button").forEach(b => b.onclick = () => {
+    config[field].splice(+b.dataset.i, 1);
+    save({[field]: config[field]}); load();
+  });
+}
+
+const save = patch => api("/api/config", patch);
+
+async function preview() {
+  const text = $("input").value;
+  if (!text.trim()) { $("proof").innerHTML = ""; $("note").textContent = ""; return; }
+  const r = await api("/api/preview", {text, mode: config.mode});
+
+  $("proof").innerHTML = r.diff.map(([op, val]) => {
+    if (op === "equal") return `<span class="w">${esc(val)} </span>`;
+    if (op === "delete") return `<span class="w"><del>${esc(val)}</del> </span>`;
+    if (op === "insert") return `<span class="w"><ins>${esc(val)}</ins>&nbsp; </span>`;
+    const [was, now] = val.split("|");
+    return `<span class="w"><del>${esc(was)}</del><ins>${esc(now)}</ins> </span>`;
+  }).join("");
+
+  $("note").textContent = [r.summary, r.used_llm ? "model pass" : "", r.note]
+    .filter(Boolean).join(" · ");
+}
+
+const esc = s => s.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+
+$("input").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(preview, 280); });
+$("hotkey").addEventListener("change", e => save({hotkey: e.target.value}));
+$("model").addEventListener("change", e => { save({model: e.target.value}); setTimeout(load, 300); });
+$("auto").addEventListener("change", e => {
+  $("autolabel").textContent = e.target.checked ? "On" : "Off";
+  save({as_you_type: e.target.checked});
+});
+function adder(inputId, field) {
+  $(inputId).addEventListener("keydown", e => {
+    if (e.key !== "Enter" || !e.target.value.trim()) return;
+    config[field].push(e.target.value.trim());
+    save({[field]: config[field]}); e.target.value = ""; load();
+  });
+}
+adder("addword", "allowlist");
+adder("addapp", "blocklist");
+
+load().then(preview);
+setInterval(load, 5000);
+</script>
+</body>
+</html>

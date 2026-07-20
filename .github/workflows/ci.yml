@@ -1,0 +1,528 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ===========================================================================
+  # The real matrix. Every cell is headless: no display, no window server, no
+  # desktop session, no granted permissions. That is a SUPPORTED state, and
+  # these jobs assert it degrades honestly rather than allowing it to fail.
+  #
+  # No `exclude:` block, deliberately. The usual reason to exclude
+  # macos-latest x 3.9 is that the arm64 runners once had no 3.9 build. That
+  # is no longer true — actions/python-versions publishes darwin-arm64 for
+  # 3.9 through 3.13 (checked against versions-manifest.json on 2026-07-20),
+  # and linux/win publish x64 for the whole range. All 15 cells are real.
+  # ===========================================================================
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    env:
+      # engine.py uses U+E000/U+E001 as private-use sentinels. Without this the
+      # Windows console encodes as cp1252 and printing a Result explodes.
+      PYTHONIOENCODING: utf-8
+      # Surfaces locale-encoding reads/writes (app.py opens its config with no
+      # encoding= and would use cp1252 on Windows). Warn-only on purpose: it is
+      # a real bug but not one this workflow owns, so it is logged, not fatal.
+      PYTHONWARNDEFAULTENCODING: "1"
+
+    defaults:
+      run:
+        shell: bash # available on all three runners; keeps heredocs portable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Installed versions
+        run: pip list
+
+      # -- The markers in pyproject.toml actually put the deps where the code
+      # looks for them. platform_win.py and platform_linux.py both gate
+      # caps.tray_icon AND caps.notifications on pystray+PIL, and notifications
+      # are the only feedback the hotkey path has, so a wrong marker makes
+      # Windows silently mute. find_spec, not import: pystray picks a backend at
+      # import time and raises on a headless runner, which is not the question.
+      - name: pyproject installs the tray dependencies where they are needed
+        run: |
+          python -c "
+          import importlib.util, sys
+
+          needed = sys.platform != 'darwin'
+          for name in ('pystray', 'PIL'):
+              found = importlib.util.find_spec(name) is not None
+              print('%-8s installed: %s (needed here: %s)' % (name, found, needed))
+              if needed and not found:
+                  sys.exit('%s missing after pip install -e .: the marker in '
+                           'pyproject.toml disagrees with the code that uses '
+                           'it, and the tray plus every notification is gone'
+                           % name)
+          print('OK: install path matches what the platform modules probe for')
+          "
+
+      # -- The console script pyproject declares actually runs ---------------
+      - name: the installed `backspace` command works
+        run: |
+          backspace --fix "teh quick brown fox jumpd over"
+          echo "OK: the console script resolves to app:main and exits 0"
+
+      # -- EVIDENCE ---------------------------------------------------------
+      # The capability report for this OS, printed into the run log. This is
+      # the artifact that makes the matrix meaningful: it is a per-platform,
+      # per-Python record of what Backspace actually claims it can do on a
+      # bare machine. Never fails the run — it is a measurement, not a test.
+      - name: Capability report (evidence, non-blocking)
+        continue-on-error: true
+        run: |
+          echo "=============================================================="
+          echo " ${{ matrix.os }} / python ${{ matrix.python }} / headless"
+          echo "=============================================================="
+          python -c "
+          import backend
+          print(backend.describe())
+          "
+
+      # -- The platform-free core, identical on all 15 cells -----------------
+      - name: engine tests
+        run: pytest test_engine.py -q
+
+      - name: backend contract tests
+        run: pytest test_backend.py -q
+
+      - name: settings server tests
+        run: pytest test_server.py -q
+
+      # -- EVIDENCE, and the only one there will ever be ---------------------
+      # platform_win.py and platform_linux.py have never run on the hardware
+      # they were written for. CI cannot fix that, but it can prove they are
+      # importable and constructible everywhere, which catches the whole class
+      # of bug that only shows up when someone finally boots Windows: a typo,
+      # a 3.10-only annotation, a module-level call into an API that isn't
+      # there. load_backend() is contracted never to raise, so asking it for a
+      # foreign platform is a legitimate question with a legitimate answer.
+      - name: every backend imports and constructs on every OS
+        run: |
+          python -c "
+          import importlib
+          import backend
+          from platform_base import Backend
+
+          for name in ('platform_mac', 'platform_win', 'platform_linux'):
+              importlib.import_module(name)          # must not raise anywhere
+              print('import %-16s OK' % name)
+
+          for key in sorted(backend._BACKENDS):
+              b = backend.load_backend(key)          # contracted never to raise
+              assert isinstance(b, Backend), (key, type(b))
+              caps = b.caps
+              print('')
+              print('load_backend(%r) -> %s' % (key, caps.name))
+              print('  hotkey path   %s' % caps.hotkey_path)
+              print('  as-you-type   %s' % caps.as_you_type)
+              for note in caps.notes:
+                  print('  note: %s' % note)
+          print('')
+          print('OK: all three platform modules import and construct here')
+          "
+
+      # -- HARD CONSTRAINT: engine.py and server.py stay platform-free -------
+      # Asserted by parsing the imports rather than trusting a code review.
+      - name: engine.py and server.py import nothing platform-specific
+        run: |
+          python -c "
+          import ast, sys, sysconfig
+          # stdlib module names, computed rather than hardcoded
+          try:
+              stdlib = set(sys.stdlib_module_names)          # 3.10+
+          except AttributeError:
+              import os                                      # 3.9
+              stdlib = set(sys.builtin_module_names)
+              for n in os.listdir(sysconfig.get_paths()['stdlib']):
+                  stdlib.add(n[:-3] if n.endswith('.py') else n)
+          allowed = stdlib | {'spellchecker', 'engine', '__future__'}
+          bad = []
+          for f in ('engine.py', 'server.py'):
+              tree = ast.parse(open(f, encoding='utf-8').read())
+              for n in ast.walk(tree):
+                  if isinstance(n, ast.Import):
+                      names = [a.name.split('.')[0] for a in n.names]
+                  elif isinstance(n, ast.ImportFrom):
+                      names = [n.module.split('.')[0]] if (n.module and n.level == 0) else []
+                  else:
+                      continue
+                  for name in names:
+                      if name not in allowed:
+                          bad.append('%s imports %r' % (f, name))
+          if bad:
+              print('PLATFORM LEAK into the platform-free core:')
+              for b in bad:
+                  print('  ' + b)
+              sys.exit(1)
+          print('engine.py and server.py are platform-free')
+          "
+
+      # -- HARD CONSTRAINT: nothing crashes when the libraries are missing ---
+      # A user who installed nothing but the source must get our sentence, not
+      # a traceback from a framework they have never heard of. sitecustomize is
+      # imported by every interpreter this job starts, so the block applies to
+      # real `python app.py` runs and not just to an in-process simulation —
+      # which is the whole difference between testing this and asserting it.
+      #
+      # Note what is NOT asserted: that the backend becomes a NullBackend. Each
+      # platform module is built to survive its own libraries going missing and
+      # keep its name while turning capabilities off, so 'macos' with four
+      # notes is the correct answer here. What must hold is that it degraded
+      # HONESTLY: nothing claimed, and a sentence saying why.
+      - name: write the CI helpers
+        run: |
+          mkdir -p ci_blocked
+          cat > ci_blocked/sitecustomize.py <<'PY'
+          """CI only: make every optional platform library unimportable."""
+          import sys
+
+          BLOCKED = {"AppKit", "Foundation", "Quartz", "HIServices", "objc",
+                     "rumps", "pynput", "pystray", "PIL", "Xlib"}
+
+
+          class _Blocker:
+              def find_spec(self, name, path=None, target=None):
+                  if name.split(".")[0] in BLOCKED:
+                      raise ImportError("blocked by CI: %s" % name)
+                  return None
+
+
+          for _mod in [m for m in sys.modules if m.split(".")[0] in BLOCKED]:
+              del sys.modules[_mod]
+          sys.meta_path.insert(0, _Blocker())
+          PY
+          PYTHONPATH=ci_blocked python -c "
+          import sys
+          try:
+              import pynput
+          except ImportError as e:
+              print('blocker works:', e)
+              sys.exit(0)
+          print('BLOCKER DID NOT BLOCK: the degradation steps below prove nothing')
+          sys.exit(1)
+          "
+
+          # Starts app.py --headless, waits for it to announce itself, fetches
+          # the settings page, stops it. Used twice: once with the platform
+          # libraries blocked, once on whatever backend this OS really has.
+          cat > ci_headless.py <<'PY'
+          """CI only: prove the headless runner comes up and serves settings."""
+          import subprocess
+          import sys
+          import threading
+          import time
+          import urllib.request
+
+          BANNER = "Backspace is running."
+          URL = "http://127.0.0.1:8765/"
+
+          proc = subprocess.Popen(
+              [sys.executable, "app.py", "--headless"],
+              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+              universal_newlines=True, bufsize=1)
+
+          lines = []
+          threading.Thread(
+              target=lambda: [lines.append(l.rstrip()) for l in proc.stdout],
+              daemon=True).start()
+
+          up = False
+          deadline = time.time() + 90
+          while time.time() < deadline:
+              if any(BANNER in l for l in lines):
+                  up = True
+                  break
+              if proc.poll() is not None:
+                  break
+              time.sleep(0.25)
+
+          page = "not attempted"
+          if up:
+              for _ in range(20):
+                  try:
+                      r = urllib.request.urlopen(URL, timeout=2)
+                      page = "%d, %d bytes" % (r.getcode(), len(r.read()))
+                      break
+                  except Exception as e:
+                      page = "%s: %s" % (type(e).__name__, e)
+                      time.sleep(0.5)
+
+          proc.terminate()
+          try:
+              proc.wait(timeout=20)
+          except subprocess.TimeoutExpired:
+              proc.kill()
+              proc.wait(timeout=20)
+
+          print("--- app.py --headless said ---")
+          for line in lines:
+              print(line)
+          print("--- settings page: %s ---" % page)
+
+          if not up:
+              sys.exit("never announced itself (exit=%r)" % proc.returncode)
+          if not page.startswith("200"):
+              sys.exit("settings server did not answer on " + URL)
+          print("OK: headless comes up with no display and serves its settings")
+          PY
+
+      - name: degraded — capabilities are honest, no traceback
+        env:
+          PYTHONPATH: ci_blocked
+        run: |
+          python -c "
+          import backend                        # must not raise
+
+          caps = backend.load_backend().caps    # must not raise
+          print('with every platform library blocked:')
+          print('  backend =', caps.name)
+          for note in caps.notes:
+              print('  note:', note)
+
+          assert caps.notes, 'degraded silently: nothing said what was missing'
+          assert not caps.synthetic_input, 'claims it can send keys with no pynput'
+          assert not caps.hotkey_path
+          assert not caps.as_you_type
+          assert caps.why_no_as_you_type(), 'must explain itself in a sentence'
+          print('OK: claimed nothing it cannot do, and said why')
+          "
+
+      - name: degraded — --doctor still answers
+        env:
+          PYTHONPATH: ci_blocked
+        run: |
+          python app.py --doctor
+          echo "OK: --doctor exited 0 with no platform library present"
+
+      - name: degraded — --fix still corrects text
+        env:
+          PYTHONPATH: ci_blocked
+        run: |
+          python -c "
+          import subprocess, sys
+
+          typo = 'teh quick brown fox jumpd over'
+          out = subprocess.check_output([sys.executable, 'app.py', '--fix', typo],
+                                        universal_newlines=True)
+          print('in :', typo)
+          print('out:', out.strip())
+          assert out.strip(), '--fix printed nothing'
+          assert out.strip() != typo, '--fix returned the input unchanged'
+          assert 'quick brown fox' in out, '--fix mangled the text: %r' % out
+          print('OK: the correction engine works with no backend at all')
+          "
+
+      - name: degraded — --headless still starts
+        env:
+          PYTHONPATH: ci_blocked
+        run: python ci_headless.py
+
+      # -- HARD CONSTRAINT: the headless path works with no display ---------
+      # Every runner is headless, so this is the real thing rather than a
+      # simulation of it: start the app, wait for it to say it is up, ask its
+      # settings server for the page a user would see, then stop it.
+      - name: --headless comes up on the live backend
+        run: python ci_headless.py
+
+      # -- HARD CONSTRAINT: degrade, never lie ------------------------------
+      # Run against whatever backend really loaded on THIS OS, not a fake.
+      - name: live backend tells the truth about itself
+        run: |
+          python -c "
+          import backend
+          from platform_base import Tri, AppRef
+
+          b = backend.get_backend()
+          caps = b.caps
+          print('live backend:', caps.name)
+
+          # 1. Claiming no password detection but answering NO to
+          #    'is secure input active?' is the exact lie the design forbids.
+          si = b.secure_input_active()
+          assert isinstance(si, Tri), type(si)
+          if not caps.password_field_detection:
+              assert si is Tri.UNKNOWN, (
+                  'backend cannot detect password fields but answered %r; '
+                  'UNKNOWN is the only honest answer' % si)
+
+          # 2. Every safety gate must block on UNKNOWN, not just on YES.
+          assert Tri.UNKNOWN.blocks and Tri.YES.blocks and not Tri.NO.blocks
+
+          # 3. If as-you-type is unavailable, the watcher must REFUSE to
+          #    install -- not install and filter.
+          if not caps.as_you_type:
+              assert b.start_watcher(lambda *a: None) is False, (
+                  'watcher was installed on a platform where as-you-type is '
+                  'not available')
+              assert caps.why_no_as_you_type()
+
+          # 4. Unidentified app is UNKNOWN_APP, never AppRef('') -- because
+          #    '' in blocklist is False and would silently fail OPEN.
+          app = b.frontmost_app()
+          assert isinstance(app, AppRef), type(app)
+          if not app.known:
+              assert app.matches(['anything']) is Tri.UNKNOWN
+
+          # 5. Clipboard: None means 'could not read', '' means 'empty'.
+          #    Conflating them turns a failure into a valid empty correction.
+          v = b.clipboard_read()
+          assert v is None or isinstance(v, str), type(v)
+
+          # 6. No counter must be None, never 0 (0 compares as a real value
+          #    and would make change-detection never fire).
+          c = b.clipboard_counter()
+          assert c is None or isinstance(c, int), type(c)
+          if not caps.clipboard_change_counter:
+              assert c is None, 'no counter capability but returned %r' % c
+
+          print('OK: live backend is internally honest')
+          "
+
+      # -- The backend module map actually points at shipped files -----------
+      # A NullBackend caused by a missing display is legitimate degradation.
+      # A NullBackend caused by backend.py naming a module that does not
+      # exist is a wiring bug that silently disables the app on EVERY
+      # platform, and it is invisible because the failure looks like a
+      # normal 'unavailable' note. This separates the two.
+      - name: backend module map resolves to modules we ship
+        run: |
+          python -c "
+          import importlib.util, sys, backend
+
+          table = getattr(backend, '_BACKENDS', None)
+          if table is None:
+              print('SKIP: backend._BACKENDS not present; cannot introspect map')
+              raise SystemExit(0)
+
+          bad = []
+          for key, (module_name, class_name) in sorted(table.items()):
+              spec = importlib.util.find_spec(module_name)
+              status = 'found' if spec else 'MISSING'
+              print('  %-8s -> %s.%s  [%s]' % (key, module_name, class_name, status))
+              if spec is None:
+                  bad.append((key, module_name))
+
+          if bad:
+              print('')
+              print('WIRING BUG: backend.py maps platforms to modules that do')
+              print('not exist, so load_backend() can only ever return a')
+              print('NullBackend and the app is inert on that platform:')
+              for key, module_name in bad:
+                  print('  %s -> no module named %r' % (key, module_name))
+              sys.exit(1)
+          print('OK: every platform maps to a module that exists')
+          "
+
+  # ===========================================================================
+  # The legacy install path. README points users at requirements.txt, so it
+  # has to keep working independently of pyproject.toml.
+  # ===========================================================================
+  requirements-txt:
+    name: requirements.txt still installs
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: core still imports after a requirements.txt-only install
+        run: |
+          python -c "
+          import engine, server, backend
+          print(backend.describe())
+          "
+
+  # ===========================================================================
+  # Resolve the macOS 3.9 dependency set from a Linux runner.
+  #
+  # The pyobjc pin is load-bearing on a machine CI does not have: macOS on
+  # Intel, Python 3.9, no Xcode. If pip picks a pyobjc with no cp39 wheel it
+  # falls back to an sdist that needs a compiler, and the install dies.
+  # --only-binary=:all: makes that failure mode LOUD here instead of on the
+  # dev machine, without needing a Mac runner at all.
+  # ===========================================================================
+  resolve-pins:
+    name: pyobjc pin resolves to real wheels (mac/py3.9)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: macOS + Python 3.9 must resolve wheel-only
+        run: |
+          # rumps is sdist-only on PyPI for every version, so it cannot take
+          # part in an --only-binary run. It is pure Python and builds with no
+          # compiler, so it is not part of the risk being tested here.
+          cat > /tmp/probe.txt <<'EOF'
+          pyspellchecker>=0.8
+          pynput>=1.7
+          pyobjc-core>=10,<11
+          pyobjc-framework-Cocoa>=10,<11
+          pyobjc-framework-Quartz>=10,<11
+          pyobjc-framework-ApplicationServices>=10,<11
+          EOF
+
+          pip download --only-binary=:all: \
+            --python-version 3.9 --implementation cp --abi cp39 \
+            --platform macosx_10_9_x86_64 \
+            --platform macosx_11_0_arm64 \
+            --dest /tmp/wheels -r /tmp/probe.txt
+
+          echo "--- resolved wheels ---"
+          ls -1 /tmp/wheels
+
+      - name: sanity — an unpinned pyobjc would break py3.9
+        run: |
+          # Documents WHY the pin exists. pyobjc 12.0 advertises
+          # Requires-Python >=3.8 but ships no cp39 wheel, so an unpinned
+          # resolve on 3.9 has to reach for the compiler. If this ever starts
+          # succeeding, upstream fixed it and the pin can be revisited.
+          if pip download --only-binary=:all: \
+               --python-version 3.9 --implementation cp --abi cp39 \
+               --platform macosx_11_0_arm64 \
+               --dest /tmp/unpinned "pyobjc-core" 2>/dev/null; then
+            echo "NOTE: unpinned pyobjc-core now resolves wheel-only on 3.9."
+            echo "The <11 pin may be relaxable. Verify on real 3.9 hardware."
+          else
+            echo "Confirmed: unpinned pyobjc-core has no cp39 wheel. Pin stays."
+          fi
