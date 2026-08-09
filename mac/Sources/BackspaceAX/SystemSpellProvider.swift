@@ -1,0 +1,100 @@
+import AppKit
+import BackspaceCore
+import Foundation
+
+/// The macOS system dictionary, behind the engine's `SpellProvider` seam.
+///
+/// `NSSpellChecker.correction(forWordRange:...)` is deliberately chosen over
+/// `guesses(forWordRange:...)`. `guesses` returns a ranked list and will
+/// happily offer something for a word it has no real opinion about; the
+/// `correction` API is the one macOS's own autocorrect uses, and it returns
+/// nil unless the system would actually make the substitution itself. That
+/// makes it the right confidence bar for a tool that edits text under the
+/// cursor — the engine's own guards then layer on top.
+///
+/// The type has no stored state, so `Sendable` is trivially satisfied; the
+/// shared checker underneath is touched only from the main actor in practice.
+public struct SystemSpellProvider: SpellProvider {
+    public init() {}
+
+    public func isMisspelled(_ word: String) -> Bool {
+        let checker = NSSpellChecker.shared
+        let found = checker.checkSpelling(of: word, startingAt: 0)
+        return found.location != NSNotFound
+    }
+
+    public func correction(for word: String) -> String? {
+        let checker = NSSpellChecker.shared
+        let range = NSRange(location: 0, length: (word as NSString).length)
+        let language = checker.language()
+
+        let suggestion = checker.correction(
+            forWordRange: range,
+            in: word,
+            language: language,
+            inSpellDocumentWithTag: 0
+        )
+        // A "correction" identical to the input is not a correction.
+        guard let suggestion, suggestion.lowercased() != word.lowercased() else { return nil }
+        // Multi-word expansions are a different feature: a one-word input
+        // turning into a phrase is autocomplete, not spelling.
+        guard !suggestion.contains(" ") else { return nil }
+
+        guard isTruncation(of: word, to: suggestion) else { return suggestion }
+        return repairRatherThanTruncate(word, range: range, language: language) ?? suggestion
+    }
+
+    /// Did the dictionary "fix" the word by simply cutting characters off it?
+    private func isTruncation(of word: String, to suggestion: String) -> Bool {
+        word.lowercased().hasPrefix(suggestion.lowercased())
+    }
+
+    /// Prefer a guess that repairs the word over one that truncates it.
+    ///
+    /// `correction(forWordRange:)` answers `jumpd` with `jump` — it finds a
+    /// real word hiding in the prefix and stops there, which silently drops a
+    /// tense. Someone who typed `jumpd` meant `jumped`; a person almost never
+    /// types a correct word plus a stray letter, but typos inside an inflected
+    /// ending are constant.
+    ///
+    /// So when the primary suggestion is a pure truncation, look through the
+    /// ranked guesses for the best one that actually repairs the word, and
+    /// fall back to the truncation if there is none.
+    private func repairRatherThanTruncate(
+        _ word: String,
+        range: NSRange,
+        language: String
+    ) -> String? {
+        let guesses = NSSpellChecker.shared.guesses(
+            forWordRange: range,
+            in: word,
+            language: language,
+            inSpellDocumentWithTag: 0
+        ) ?? []
+
+        let viable = guesses.filter { candidate in
+            !candidate.contains(" ")
+                && candidate.lowercased() != word.lowercased()
+                && !isTruncation(of: word, to: candidate)
+                // Still a typo fix, not a different word entirely.
+                && abs(candidate.count - word.count) <= 2
+        }
+
+        // Tiebreak toward a dropped character, the most common typo there is.
+        // A dropped character leaves what you typed as a *subsequence* of what
+        // you meant: `jumpd` sits inside `jumped`, but not inside `jumps`. The
+        // dictionary ranks the substitution first; this prefers the reading
+        // where the letters you did type all survive, in order.
+        return viable.first { isSubsequence(word, of: $0) } ?? viable.first
+    }
+
+    /// Do all of `needle`'s characters appear in `haystack`, in order?
+    private func isSubsequence(_ needle: String, of haystack: String) -> Bool {
+        var remaining = Substring(haystack.lowercased())
+        for character in needle.lowercased() {
+            guard let index = remaining.firstIndex(of: character) else { return false }
+            remaining = remaining[remaining.index(after: index)...]
+        }
+        return true
+    }
+}
