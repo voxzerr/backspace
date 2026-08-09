@@ -76,10 +76,14 @@ jobs:
           echo "out: $out"
           if [ -z "$out" ]; then echo "--fix printed nothing"; exit 1; fi
           if [ "$out" = "$typo" ]; then echo "--fix returned the input unchanged"; exit 1; fi
-          case "$out" in
-            *"quick brown fox"*) ;;
-            *) echo "--fix mangled the text: $out"; exit 1 ;;
-          esac
+          # Exact, not a substring match. A loose check let a real regression
+          # through once: the system dictionary "corrected" jumpd to jump by
+          # truncation, dropping the tense, and "quick brown fox" was still
+          # present so nothing failed.
+          if [ "$out" != "The quick brown fox jumped over" ]; then
+            echo "unexpected correction: $out"
+            exit 1
+          fi
           echo "OK: the correction engine works with no backend at all"
 
       - name: --fix reads stdin

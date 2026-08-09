@@ -26,18 +26,58 @@ public struct SystemSpellProvider: SpellProvider {
     public func correction(for word: String) -> String? {
         let checker = NSSpellChecker.shared
         let range = NSRange(location: 0, length: (word as NSString).length)
+        let language = checker.language()
+
         let suggestion = checker.correction(
             forWordRange: range,
             in: word,
-            language: checker.language(),
+            language: language,
             inSpellDocumentWithTag: 0
         )
         // A "correction" identical to the input is not a correction.
         guard let suggestion, suggestion.lowercased() != word.lowercased() else { return nil }
-        // Multi-word expansions are a different feature ("teh cat" → "the cat"
-        // is fine, but a one-word input turning into a phrase is autocomplete,
-        // not spelling).
+        // Multi-word expansions are a different feature: a one-word input
+        // turning into a phrase is autocomplete, not spelling.
         guard !suggestion.contains(" ") else { return nil }
-        return suggestion
+
+        guard isTruncation(of: word, to: suggestion) else { return suggestion }
+        return repairRatherThanTruncate(word, range: range, language: language) ?? suggestion
+    }
+
+    /// Did the dictionary "fix" the word by simply cutting characters off it?
+    private func isTruncation(of word: String, to suggestion: String) -> Bool {
+        word.lowercased().hasPrefix(suggestion.lowercased())
+    }
+
+    /// Prefer a guess that repairs the word over one that truncates it.
+    ///
+    /// `correction(forWordRange:)` answers `jumpd` with `jump` — it finds a
+    /// real word hiding in the prefix and stops there, which silently drops a
+    /// tense. Someone who typed `jumpd` meant `jumped`; a person almost never
+    /// types a correct word plus a stray letter, but typos inside an inflected
+    /// ending are constant.
+    ///
+    /// So when the primary suggestion is a pure truncation, look through the
+    /// ranked guesses for the best one that actually repairs the word, and
+    /// fall back to the truncation if there is none.
+    private func repairRatherThanTruncate(
+        _ word: String,
+        range: NSRange,
+        language: String
+    ) -> String? {
+        let guesses = NSSpellChecker.shared.guesses(
+            forWordRange: range,
+            in: word,
+            language: language,
+            inSpellDocumentWithTag: 0
+        ) ?? []
+
+        return guesses.first { candidate in
+            !candidate.contains(" ")
+                && candidate.lowercased() != word.lowercased()
+                && !isTruncation(of: word, to: candidate)
+                // Still a typo fix, not a different word entirely.
+                && abs(candidate.count - word.count) <= 2
+        }
     }
 }

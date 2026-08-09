@@ -15,42 +15,82 @@ import BackspaceCore
 /// and they are verified by hand before a release or they are not verified.
 final class DegradationTests: XCTestCase {
 
-    func testCapabilitiesNeverClaimMoreThanThePermissionAllows() {
-        let capabilities = Accessibility.capabilities()
+    /// The ungranted case, built by hand rather than waited for.
+    ///
+    /// GitHub's macOS runners have the Accessibility permission pre-granted —
+    /// `--doctor` on CI reports every capability as `yes`. So a test written
+    /// as `if !isTrusted { assert everything is off }` passes without ever
+    /// running an assertion, and the degradation path we most need to be right
+    /// about is the one nothing checks. Construct the state instead of hoping
+    /// the runner is in it.
+    private func capabilities(
+        trusted: Bool = true,
+        detectsSecureFields: Bool = true,
+        observes: Bool = true
+    ) -> Accessibility.Capabilities {
+        Accessibility.Capabilities(
+            accessibilityTrusted: trusted,
+            canReadFocusedText: trusted,
+            canWriteFocusedText: trusted,
+            canDetectSecureFields: trusted && detectsSecureFields,
+            canIdentifyFrontmostApp: true,
+            canObserveChanges: trusted && observes,
+            notes: trusted ? [] : ["Accessibility permission not granted."]
+        )
+    }
 
-        if !capabilities.accessibilityTrusted {
-            XCTAssertFalse(capabilities.canReadFocusedText)
-            XCTAssertFalse(capabilities.canWriteFocusedText)
-            XCTAssertFalse(capabilities.canDetectSecureFields)
-            XCTAssertFalse(capabilities.hotkeyPath)
-            XCTAssertFalse(capabilities.asYouType)
-            XCTAssertFalse(capabilities.notes.isEmpty, "degraded silently: nothing said what was missing")
+    func testWithoutPermissionNothingIsClaimed() {
+        let ungranted = capabilities(trusted: false)
+        XCTAssertFalse(ungranted.canReadFocusedText)
+        XCTAssertFalse(ungranted.canWriteFocusedText)
+        XCTAssertFalse(ungranted.canDetectSecureFields)
+        XCTAssertFalse(ungranted.hotkeyPath)
+        XCTAssertFalse(ungranted.asYouType)
+        XCTAssertFalse(ungranted.notes.isEmpty, "degraded silently: nothing said what was missing")
+        XCTAssertNotNil(ungranted.whyNoAsYouType)
+    }
+
+    func testTheFullCapabilityTruthTable() {
+        // Every combination, so no path through the logic is untested.
+        for trusted in [true, false] {
+            for detects in [true, false] {
+                for observes in [true, false] {
+                    let caps = capabilities(
+                        trusted: trusted, detectsSecureFields: detects, observes: observes
+                    )
+                    XCTAssertEqual(caps.hotkeyPath, trusted)
+                    XCTAssertEqual(caps.asYouType, trusted && detects && observes)
+                    // Unavailable always explains itself; available never does.
+                    if caps.asYouType {
+                        XCTAssertNil(caps.whyNoAsYouType)
+                    } else {
+                        XCTAssertFalse(caps.whyNoAsYouType?.isEmpty ?? true)
+                    }
+                }
+            }
         }
     }
 
-    func testUnavailableFeaturesExplainThemselves() {
-        let capabilities = Accessibility.capabilities()
-        if !capabilities.asYouType {
-            XCTAssertNotNil(capabilities.whyNoAsYouType)
-            XCTAssertFalse(capabilities.whyNoAsYouType?.isEmpty ?? true)
+    func testTheLiveMachineNeverClaimsMoreThanItsPermissionAllows() {
+        // Whatever this runner's state, the invariant holds: no permission
+        // means no capability. On a pre-granted runner this asserts the
+        // granted side instead, which is still worth checking.
+        let live = Accessibility.capabilities()
+        if !live.accessibilityTrusted {
+            XCTAssertFalse(live.hotkeyPath)
+            XCTAssertFalse(live.asYouType)
         }
+        XCTAssertEqual(live.hotkeyPath, live.canReadFocusedText && live.canWriteFocusedText)
     }
 
     func testAsYouTypeRequiresSecureFieldDetection() {
         // The categorical rule: no password-field probe, no watching. The
-        // keyboard observer is itself the exposure, so this must hold by
-        // construction and not by a runtime check somewhere else.
-        let blind = Accessibility.Capabilities(
-            accessibilityTrusted: true,
-            canReadFocusedText: true,
-            canWriteFocusedText: true,
-            canDetectSecureFields: false,
-            canIdentifyFrontmostApp: true,
-            canObserveChanges: true,
-            notes: []
-        )
+        // observer is itself the exposure, so this must hold by construction
+        // and not by a runtime check somewhere else.
+        let blind = capabilities(detectsSecureFields: false)
         XCTAssertFalse(blind.asYouType)
-        XCTAssertNotNil(blind.whyNoAsYouType)
+        XCTAssertTrue(blind.whyNoAsYouType?.contains("password") ?? false,
+                      "the refusal must name the actual reason")
     }
 
     func testDoctorReportRunsWithoutASession() {
@@ -118,6 +158,30 @@ final class DegradationTests: XCTestCase {
         // A correctly spelled word must never come back "corrected".
         XCTAssertNil(provider.correction(for: "believe"))
         XCTAssertFalse(provider.isMisspelled("believe"))
+    }
+
+    /// The macOS dictionary answers `jumpd` with `jump` — it finds a real word
+    /// in the prefix and stops, silently dropping the tense. Someone who typed
+    /// `jumpd` meant `jumped`.
+    ///
+    /// This test runs against the live system dictionary on purpose: the whole
+    /// question is what Apple's dictionary actually does, and a fake would
+    /// only assert that our own fake behaves as written.
+    func testTruncationIsNotAcceptedAsACorrection() {
+        let provider = SystemSpellProvider()
+        for typo in ["jumpd", "workd", "playd"] {
+            guard let correction = provider.correction(for: typo) else { continue }
+            XCTAssertFalse(
+                typo.lowercased().hasPrefix(correction.lowercased()),
+                "'\(typo)' was 'corrected' to '\(correction)' by truncation, "
+                    + "which drops meaning rather than fixing a typo"
+            )
+        }
+    }
+
+    func testTheJumpedCase() {
+        // The specific regression the CI log surfaced, pinned by name.
+        XCTAssertEqual(SystemSpellProvider().correction(for: "jumpd"), "jumped")
     }
 
     func testEngineWorksWithTheSystemDictionary() {
