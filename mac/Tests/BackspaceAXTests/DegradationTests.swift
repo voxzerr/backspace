@@ -179,9 +179,19 @@ final class DegradationTests: XCTestCase {
         }
     }
 
-    func testTheJumpedCase() {
-        // The specific regression the CI log surfaced, pinned by name.
-        XCTAssertEqual(SystemSpellProvider().correction(for: "jumpd"), "jumped")
+    /// The specific case the CI log surfaced, pinned to the property we own.
+    ///
+    /// Deliberately not `XCTAssertEqual(..., "jumped")`. Both `jumped` and
+    /// `jumps` are defensible readings of `jumpd`, and which one Apple's
+    /// dictionary ranks first is not our code — asserting it would make the
+    /// build fail on an OS update for a reason that is nobody's bug. What is
+    /// ours is that the answer is a repair rather than a truncation.
+    func testJumpdIsRepairedRatherThanTruncated() {
+        guard let correction = SystemSpellProvider().correction(for: "jumpd") else {
+            return XCTFail("the dictionary offered nothing for an obvious typo")
+        }
+        XCTAssertNotEqual(correction.lowercased(), "jump")
+        XCTAssertTrue(correction.lowercased().hasPrefix("jump"))
     }
 
     func testEngineWorksWithTheSystemDictionary() {

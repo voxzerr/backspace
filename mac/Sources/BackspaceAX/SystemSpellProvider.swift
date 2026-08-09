@@ -72,12 +72,29 @@ public struct SystemSpellProvider: SpellProvider {
             inSpellDocumentWithTag: 0
         ) ?? []
 
-        return guesses.first { candidate in
+        let viable = guesses.filter { candidate in
             !candidate.contains(" ")
                 && candidate.lowercased() != word.lowercased()
                 && !isTruncation(of: word, to: candidate)
                 // Still a typo fix, not a different word entirely.
                 && abs(candidate.count - word.count) <= 2
         }
+
+        // Tiebreak toward a dropped character, the most common typo there is.
+        // A dropped character leaves what you typed as a *subsequence* of what
+        // you meant: `jumpd` sits inside `jumped`, but not inside `jumps`. The
+        // dictionary ranks the substitution first; this prefers the reading
+        // where the letters you did type all survive, in order.
+        return viable.first { isSubsequence(word, of: $0) } ?? viable.first
+    }
+
+    /// Do all of `needle`'s characters appear in `haystack`, in order?
+    private func isSubsequence(_ needle: String, of haystack: String) -> Bool {
+        var remaining = Substring(haystack.lowercased())
+        for character in needle.lowercased() {
+            guard let index = remaining.firstIndex(of: character) else { return false }
+            remaining = remaining[remaining.index(after: index)...]
+        }
+        return true
     }
 }

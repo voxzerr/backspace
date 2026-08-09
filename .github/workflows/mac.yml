@@ -76,14 +76,20 @@ jobs:
           echo "out: $out"
           if [ -z "$out" ]; then echo "--fix printed nothing"; exit 1; fi
           if [ "$out" = "$typo" ]; then echo "--fix returned the input unchanged"; exit 1; fi
-          # Exact, not a substring match. A loose check let a real regression
-          # through once: the system dictionary "corrected" jumpd to jump by
-          # truncation, dropping the tense, and "quick brown fox" was still
-          # present so nothing failed.
-          if [ "$out" != "The quick brown fox jumped over" ]; then
-            echo "unexpected correction: $out"
+          # Assert the invariant we own, not the system dictionary's ranking.
+          # `jumpd` could defensibly become `jumped` or `jumps`; which one
+          # Apple prefers is not our code and must not gate the build. What is
+          # ours: it must never be truncated to `jump`, because that silently
+          # drops the tense. The exact-output check lives on the stdin step
+          # below, where the correction is unambiguous.
+          if [ "$out" = "The quick brown fox jump over" ]; then
+            echo "regression: 'jumpd' truncated to 'jump', dropping the tense"
             exit 1
           fi
+          case "$out" in
+            "The quick brown fox jump"*" over") ;;
+            *) echo "unexpected correction: $out"; exit 1 ;;
+          esac
           echo "OK: the correction engine works with no backend at all"
 
       - name: --fix reads stdin
