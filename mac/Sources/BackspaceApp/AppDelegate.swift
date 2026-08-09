@@ -1,4 +1,5 @@
 import AppKit
+import BackspaceAI
 import BackspaceAX
 import BackspaceCore
 import Foundation
@@ -95,6 +96,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
         menu.addItem(action("Fix Selection", #selector(fixSelection)))
+
+        let expand = action("Expand Prompt", #selector(expandPrompt))
+        expand.isEnabled = AIConfiguration.hasAPIKey
+        menu.addItem(expand)
+        if !AIConfiguration.hasAPIKey {
+            menu.addItem(disabled("  Needs an Anthropic API key"))
+        }
+
+        menu.addItem(.separator())
         menu.addItem(action("Capability Report…", #selector(showDoctor)))
         menu.addItem(.separator())
         menu.addItem(action("Quit Backspace", #selector(quit)))
@@ -135,6 +145,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func fixSelection() {
         coordinator.correctSelection()
+    }
+
+    @objc private func expandPrompt() {
+        guard let key = AIConfiguration.apiKey else {
+            notify("Backspace", body: "Add your Anthropic API key to expand prompts.")
+            return
+        }
+        Task { @MainActor in
+            let client = ClaudeClient(configuration: .init(apiKey: key))
+            await coordinator.expandPrompt(using: PromptExpander(client: client))
+        }
     }
 
     @objc private func openAccessibilitySettings() {

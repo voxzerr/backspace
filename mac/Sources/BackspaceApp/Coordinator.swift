@@ -1,4 +1,5 @@
 import AppKit
+import BackspaceAI
 import BackspaceAX
 import BackspaceCore
 import Foundation
@@ -145,6 +146,66 @@ final class Coordinator {
             // is untouched, and the reason is worth surfacing because "it
             // stopped working in this one app" is the report we will get.
             lastHandledSentence = original
+            onRefusal?(String(describing: error))
+        }
+    }
+
+    // MARK: - Prompt expansion
+
+    /// Turn the prompt under the cursor into a brief.
+    ///
+    /// Unlike the correction paths this one goes over the network, which means
+    /// a second or two passes between reading the text and writing it back —
+    /// long enough for the person to have kept typing. So the field is re-read
+    /// immediately before the write and the whole thing is abandoned if it
+    /// moved. Pasting a brief over a sentence someone has since changed is
+    /// exactly the kind of surprise this app exists not to cause.
+    func expandPrompt(using expander: PromptExpander) async {
+        guard let field = FocusReader.current() else {
+            onRefusal?("click into a prompt box first")
+            return
+        }
+        if field.isSecure.blocks {
+            onRefusal?("that looks like a password field")
+            return
+        }
+
+        let target = field.selection.length > 0
+            ? field.selection
+            : NSRange(location: 0, length: (field.text as NSString).length)
+        let source = (field.text as NSString).substring(with: target)
+
+        let verdict = PromptHeuristics.evaluate(source)
+        guard verdict.worthExpanding else {
+            onRefusal?(
+                source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "nothing to expand"
+                    : "that prompt already says what it means"
+            )
+            return
+        }
+
+        // Name the destination so the brief can be written to suit it.
+        let surface = AISurface.current(app: field.app, focused: field.element)?.name
+
+        do {
+            let brief = try await expander.expand(source, surface: surface)
+            let rendered = brief.render()
+
+            guard let live = FocusReader.current(), live.text == field.text else {
+                onRefusal?("the text changed while expanding — nothing was replaced")
+                return
+            }
+
+            isApplying = true
+            defer { isApplying = false }
+            try FieldWriter.replace(range: target, with: rendered, in: live)
+            onCorrection?(CorrectionResult(
+                text: rendered,
+                changes: [Change(before: source, after: rendered, reason: .model)],
+                usedModel: true
+            ))
+        } catch {
             onRefusal?(String(describing: error))
         }
     }
