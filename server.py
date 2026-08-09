@@ -69,7 +69,31 @@ def build(core, on_change=lambda: None, port: int = PORT) -> HTTPServer:
             self.end_headers()
             self.wfile.write(body)
 
+        # Enough for any real config post; bounded so a lying Content-Length
+        # cannot make us read forever.
+        DRAIN_LIMIT = 1 << 20
+
+        def drain(self) -> None:
+            """Read and discard the request body, so the socket closes cleanly."""
+            try:
+                remaining = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                return
+            remaining = min(remaining, self.DRAIN_LIMIT)
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+
         def refuse(self, why: str) -> bool:
+            # A refusal answers a request whose body the gates never read.
+            # Closing the connection with bytes still in the receive buffer
+            # makes Windows reset it, and the client's recv() then fails with
+            # WinError 10053 *before* it can read this response — so the caller
+            # sees a dropped connection instead of the 403 telling it what it
+            # did wrong. Draining first is what makes the refusal legible.
+            self.drain()
             self.send(json.dumps({"error": why}).encode(), code=403)
             return False
 

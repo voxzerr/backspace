@@ -46,10 +46,25 @@ if let fixIndex = arguments.firstIndex(of: "--fix") {
     exit(0)
 }
 
-let application = NSApplication.shared
-let delegate = AppDelegate()
-application.delegate = delegate
-// Accessory: menu bar only, no dock icon. The app must never take focus from
-// whatever the person is typing in — that is the entire premise.
-application.setActivationPolicy(.accessory)
-application.run()
+/// Bring up the menu bar app.
+///
+/// Isolated to the main actor because every line of it is: `NSApplication`,
+/// the delegate, and the coordinator underneath are all `@MainActor`.
+@MainActor
+private func launchMenuBarApp() {
+    // `NSApplication.delegate` is an unowned reference, so something else has
+    // to keep the delegate alive. This stack frame does: `run()` blocks for
+    // the lifetime of the process and never returns.
+    let delegate = AppDelegate()
+    let application = NSApplication.shared
+    application.delegate = delegate
+    // Accessory: menu bar only, no dock icon. The app must never take focus
+    // from whatever the person is typing in — that is the entire premise.
+    application.setActivationPolicy(.accessory)
+    application.run()
+}
+
+// Top-level code already runs on the main thread; this states it in a way the
+// compiler can check, rather than relying on where the entry point happens to
+// be scheduled.
+MainActor.assumeIsolated { launchMenuBarApp() }

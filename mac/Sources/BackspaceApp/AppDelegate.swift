@@ -5,6 +5,12 @@ import Foundation
 import UserNotifications
 
 /// The menu bar item, and the wiring between it and the coordinator.
+///
+/// `@MainActor` on the whole class rather than on individual methods: every
+/// member touches AppKit or the `@MainActor` coordinator, so isolating the
+/// type is both the honest description and the one that does not need
+/// revisiting each time a method is added.
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem?
