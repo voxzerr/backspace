@@ -109,6 +109,40 @@ public actor ClaudeClient {
         return try text(from: response)
     }
 
+    /// One turn constrained to a JSON schema.
+    ///
+    /// `output_config.format` makes the response *guaranteed* parseable rather
+    /// than usually parseable — which matters when the result is rendered
+    /// straight into someone's text field. A prose reply where JSON was
+    /// expected would otherwise land in their chat box verbatim.
+    public func structured(
+        system: String,
+        user: String,
+        schema: [String: Any],
+        effort: Effort = .medium,
+        maxTokens: Int = 4096
+    ) async throws -> Data {
+        guard let configuration else { throw ClientError.notConfigured }
+
+        let body: [String: Any] = [
+            "model": configuration.model,
+            "max_tokens": maxTokens,
+            "system": [[
+                "type": "text", "text": system,
+                "cache_control": ["type": "ephemeral"],
+            ]],
+            "thinking": ["type": "adaptive"],
+            "output_config": [
+                "effort": effort.rawValue,
+                "format": ["type": "json_schema", "schema": schema],
+            ],
+            "messages": [["role": "user", "content": user]],
+        ]
+
+        let response = try await send(body, configuration: configuration)
+        return Data(try text(from: response).utf8)
+    }
+
     /// A streaming turn, for the ask panel where the person is watching the
     /// answer arrive and a thirty-second blank pause is unacceptable.
     public func stream(
