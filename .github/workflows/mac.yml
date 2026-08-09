@@ -1,0 +1,99 @@
+name: mac
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: mac-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: mac
+
+jobs:
+  # ===========================================================================
+  # The macOS app. The runner is headless — no window server, no granted
+  # Accessibility permission, no other applications running. That is a
+  # SUPPORTED state, and these steps assert the app degrades honestly in it.
+  #
+  # What this job proves: it compiles, the platform-free core passes its full
+  # test suite, the command-line paths work end to end, and nothing claims a
+  # capability it does not have.
+  #
+  # What no CI job can ever prove: that a correction is actually written into
+  # another application's text field. That needs a real session and a granted
+  # permission, and it is hand-tested before a release or it is not tested.
+  # ===========================================================================
+  build:
+    name: swift build + test
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Build
+        run: swift build -v
+
+      - name: Test
+        run: swift test -v
+
+      # -- HARD CONSTRAINT: BackspaceCore stays platform-free ----------------
+      # The correction engine and the safety gates must import Foundation and
+      # nothing else. This is what makes them exhaustively testable on a
+      # machine with no display and no permissions, which is the only kind of
+      # machine that will ever run them automatically. Asserted by grep rather
+      # than by trusting a code review.
+      - name: BackspaceCore imports nothing platform-specific
+        run: |
+          leaked=$(grep -rnE '^\s*import\s+(AppKit|Cocoa|ApplicationServices|Carbon|SwiftUI|UIKit|CoreGraphics|Quartz)\b' \
+            Sources/BackspaceCore || true)
+          if [ -n "$leaked" ]; then
+            echo "PLATFORM LEAK into the platform-free core:"
+            echo "$leaked"
+            exit 1
+          fi
+          echo "OK: BackspaceCore is platform-free"
+
+      # -- The command-line paths work with no permission and no display -----
+      - name: --doctor answers on a headless runner
+        run: |
+          swift run backspace --doctor
+          echo "OK: --doctor exited 0 with no session and no permission"
+
+      - name: --fix corrects text with no permission
+        run: |
+          typo="teh quick brown fox jumpd over"
+          out=$(swift run backspace --fix "$typo")
+          echo "in : $typo"
+          echo "out: $out"
+          if [ -z "$out" ]; then echo "--fix printed nothing"; exit 1; fi
+          if [ "$out" = "$typo" ]; then echo "--fix returned the input unchanged"; exit 1; fi
+          case "$out" in
+            *"quick brown fox"*) ;;
+            *) echo "--fix mangled the text: $out"; exit 1 ;;
+          esac
+          echo "OK: the correction engine works with no backend at all"
+
+      - name: --fix reads stdin
+        run: |
+          out=$(echo "i cant beleive it" | swift run backspace --fix)
+          echo "out: $out"
+          case "$out" in
+            "I can't believe it") echo "OK: stdin path works" ;;
+            *) echo "unexpected: $out"; exit 1 ;;
+          esac
+
+      # -- EVIDENCE: the capability report for this runner, in the log -------
+      # Never fails the run. It is a measurement, not a test: a per-OS record
+      # of exactly what Backspace claims it can do on a bare machine.
+      - name: Capability report (evidence, non-blocking)
+        continue-on-error: true
+        run: swift run backspace --doctor
