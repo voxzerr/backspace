@@ -82,13 +82,32 @@ public enum FocusReader {
     /// Returns `UNKNOWN`, never `NO`, when the element declines to answer.
     /// A field we could not classify is treated as a password field.
     public static func secureness(of element: AXElement) -> Tri {
-        guard let subrole = element.subrole else {
-            // No subrole at all is normal for plain text fields, so fall back
-            // to the role. If even that is unreadable we genuinely do not know.
+        if let subrole = element.subrole {
+            return Tri(subrole == kAXSecureTextFieldSubrole)
+        }
+
+        // A nil subrole is ambiguous: the element may genuinely not have one
+        // (normal for a plain text field), or the read may simply have failed
+        // — a busy Chrome renderer exceeding the 250ms messaging timeout looks
+        // identical from here. Answering NO to the second case would mean
+        // treating a password field we could not inspect as definitely not a
+        // password field, which is the one mistake this whole design exists to
+        // prevent. So ask whether the element *declares* the attribute, which
+        // distinguishes them.
+        switch element.supports(kAXSubroleAttribute) {
+        case .yes:
+            // It has a subrole and we could not read it. That is a failed
+            // probe, not an absent attribute.
+            return .unknown
+        case .unknown:
+            // We could not even enumerate its attributes.
+            return .unknown
+        case .no:
+            // Genuinely no subrole. Fall back to the role — but only a known
+            // text role counts as "not secure"; anything else we do not know.
             guard let role = element.role else { return .unknown }
             return textRoles.contains(role) ? .no : .unknown
         }
-        return Tri(subrole == kAXSecureTextFieldSubrole)
     }
 }
 

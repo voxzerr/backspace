@@ -96,15 +96,23 @@ public enum Accessibility {
         public let canObserveChanges: Bool
         public let notes: [String]
 
-        /// Can we correct a selection on a hotkey?
-        public var hotkeyPath: Bool { canReadFocusedText && canWriteFocusedText }
+        /// Can we read a selection and write a correction back?
+        ///
+        /// Named for what it actually measures. It was called `hotkeyPath`,
+        /// and `--doctor` printed "hotkey correction available" on the
+        /// strength of it — while the app had no hotkey registration at all.
+        /// Whether a chord is actually bound is a fact about the app, not
+        /// about this machine's permissions, so it is reported separately.
+        public var canCorrectSelection: Bool { canReadFocusedText && canWriteFocusedText }
 
         /// Can we correct sentences as they are typed?
         ///
         /// Requires the secure-field probe specifically. Without it every
         /// correction would be running blind past a password box, and the
         /// feature is refused rather than degraded.
-        public var asYouType: Bool { hotkeyPath && canObserveChanges && canDetectSecureFields }
+        public var asYouType: Bool {
+            canCorrectSelection && canObserveChanges && canDetectSecureFields
+        }
 
         public var whyNoAsYouType: String? {
             guard !asYouType else { return nil }
@@ -132,7 +140,7 @@ public enum Accessibility {
                 lines.append("  \(label.padding(toLength: 26, withPad: " ", startingAt: 0))\(value ? "yes" : "no")")
             }
             lines.append("")
-            lines.append("  hotkey correction         \(hotkeyPath ? "available" : "unavailable")")
+            lines.append("  correct a selection       \(canCorrectSelection ? "available" : "unavailable")")
             lines.append("  as-you-type               \(asYouType ? "available" : "unavailable")")
             if let why = whyNoAsYouType { lines.append("      \(why)") }
             if !notes.isEmpty {

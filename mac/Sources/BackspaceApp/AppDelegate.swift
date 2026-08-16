@@ -12,15 +12,25 @@ import UserNotifications
 /// type is both the honest description and the one that does not need
 /// revisiting each time a method is added.
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var statusItem: NSStatusItem?
     private let coordinator = Coordinator()
     private var permissionPoll: Timer?
+    private let settingsWindow = SettingsWindowController()
+    private var fixHotkey: GlobalHotkey?
+    private var expandHotkey: GlobalHotkey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenuBarItem()
         wireCoordinator()
+        registerHotkeys()
+        requestNotificationPermission()
+
+        settingsWindow.store.onChange = { [weak self] in
+            self?.coordinator.reloadSettings()
+            self?.refreshMenu()
+        }
 
         // Reconcile the saved settings against what this machine can do, and
         // say so if something had to be switched off. Silently disagreeing
@@ -31,8 +41,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             notify("As-you-type is off", body: reason)
         }
 
+        // Only start watching if the person actually asked for it. Starting
+        // regardless would leave a live AXObserver reading the full contents
+        // of every focused field on every keystroke — including blocklisted
+        // apps — and throwing it away at the settings check. FocusTracker's
+        // own contract is that a watcher which installs and then filters is
+        // still a watcher.
         if Accessibility.isTrusted {
-            coordinator.start()
+            if Settings.current.asYouTypeEnabled { coordinator.start() }
         } else {
             Accessibility.requestPermission()
             waitForPermission()
@@ -51,7 +67,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.title = "⌫"
         item.button?.toolTip = "Backspace"
-        item.menu = NSMenu()
+        let menu = NSMenu()
+        // AppKit re-enables any item whose target responds to its action,
+        // which is every item we build. Without this, every deliberate
+        // `isEnabled = false` below is silently undone at display time and
+        // the user can click a feature this machine cannot deliver.
+        menu.autoenablesItems = false
+        menu.delegate = self
+        item.menu = menu
         statusItem = item
     }
 
@@ -78,10 +101,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             item.representedObject = mode.rawValue
             item.state = settings.mode == mode ? .on : .off
-            // `clean` and `polish` need a model; leave them visibly present
-            // but inert rather than hiding them, so the feature is
-            // discoverable and the reason it is off is obvious.
-            item.isEnabled = !mode.needsModel || AIConfiguration.hasAPIKey
+            // `clean` and `polish` need a model *and* a key. Visibly present
+            // but inert rather than hidden, so the feature is discoverable and
+            // the reason it is off is obvious — and now genuinely inert,
+            // because `autoenablesItems` is off.
+            item.isEnabled = !mode.needsModel
+                || (AIConfiguration.hasAPIKey && capabilities.canCorrectSelection)
             menu.addItem(item)
         }
         menu.addItem(.separator())
@@ -95,19 +120,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(action("Fix Selection", #selector(fixSelection)))
+
+        let fix = action("Fix Selection", #selector(fixSelection))
+        // Only show the chord if it actually bound — another app may already
+        // own it, and a menu advertising a shortcut that does nothing is worse
+        // than one that shows none.
+        if let bound = fixHotkey { fix.title += "   \(bound.combination.label)" }
+        fix.isEnabled = capabilities.canCorrectSelection
+        menu.addItem(fix)
 
         let expand = action("Expand Prompt", #selector(expandPrompt))
-        expand.isEnabled = AIConfiguration.hasAPIKey
+        if let bound = expandHotkey { expand.title += "   \(bound.combination.label)" }
+        expand.isEnabled = capabilities.canCorrectSelection && AIConfiguration.hasAPIKey
         menu.addItem(expand)
         if !AIConfiguration.hasAPIKey {
-            menu.addItem(disabled("  Needs an Anthropic API key"))
+            menu.addItem(disabled("  Add an API key in Settings to enable"))
         }
 
         menu.addItem(.separator())
+        menu.addItem(action("Settings…", #selector(openSettings)))
         menu.addItem(action("Capability Report…", #selector(showDoctor)))
         menu.addItem(.separator())
         menu.addItem(action("Quit Backspace", #selector(quit)))
+    }
+
+    /// Rebuild every time the menu opens.
+    ///
+    /// Permissions are granted and revoked in System Settings, and API keys
+    /// arrive out of band — none of which sends us a notification. Rebuilding
+    /// on open is what stops the menu advertising a capability that was taken
+    /// away twenty minutes ago.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        refreshMenu()
     }
 
     private func action(_ title: String, _ selector: Selector) -> NSMenuItem {
@@ -137,14 +181,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleAsYouType() {
         var settings = Settings.current
         settings.asYouTypeEnabled.toggle()
+
+        if settings.asYouTypeEnabled {
+            // Honour the answer. `start()` returns false without installing
+            // anything when the machine cannot support this safely, and a
+            // ticked checkbox over a dead feature is worse than an unticked one.
+            guard coordinator.start() else {
+                notify(
+                    "As-you-type is unavailable",
+                    body: Accessibility.capabilities().whyNoAsYouType ?? "Not supported here."
+                )
+                refreshMenu()
+                return
+            }
+        } else {
+            coordinator.stop()
+        }
+
         settings.save()
         Settings.current = settings
-        if settings.asYouTypeEnabled { coordinator.start() }
         refreshMenu()
     }
 
     @objc private func fixSelection() {
-        coordinator.correctSelection()
+        // `clean` and `polish` route through the model pass; `fix` stays
+        // entirely offline and never touches the network.
+        guard Settings.current.mode.needsModel, let key = AIConfiguration.apiKey else {
+            coordinator.correctSelection()
+            return
+        }
+        Task { @MainActor in
+            let client = ClaudeClient(configuration: .init(apiKey: key))
+            await coordinator.refineSelection(using: client)
+        }
+    }
+
+    /// Bind the global chords.
+    ///
+    /// A chord another app already owns simply fails to register — ordinary,
+    /// and not something to crash or nag about. The menu shows the chord only
+    /// when it actually bound, so it never advertises a shortcut that does
+    /// nothing.
+    private func registerHotkeys() {
+        fixHotkey = GlobalHotkey(.fixSelection) { [weak self] in
+            Task { @MainActor in self?.coordinator.correctSelection() }
+        }
+        expandHotkey = GlobalHotkey(.expandPrompt) { [weak self] in
+            Task { @MainActor in self?.expandPrompt() }
+        }
+    }
+
+    /// macOS delivers nothing for an app that never asked.
+    private func requestNotificationPermission() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    @objc private func openSettings() {
+        settingsWindow.show()
     }
 
     @objc private func expandPrompt() {
@@ -186,7 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard Accessibility.isTrusted else { return }
             timer.invalidate()
             Task { @MainActor in
-                self?.coordinator.start()
+                if Settings.current.asYouTypeEnabled { self?.coordinator.start() }
                 self?.refreshMenu()
                 self?.notify("Backspace is ready", body: "Accessibility permission granted.")
             }

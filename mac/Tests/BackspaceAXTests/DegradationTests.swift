@@ -44,7 +44,7 @@ final class DegradationTests: XCTestCase {
         XCTAssertFalse(ungranted.canReadFocusedText)
         XCTAssertFalse(ungranted.canWriteFocusedText)
         XCTAssertFalse(ungranted.canDetectSecureFields)
-        XCTAssertFalse(ungranted.hotkeyPath)
+        XCTAssertFalse(ungranted.canCorrectSelection)
         XCTAssertFalse(ungranted.asYouType)
         XCTAssertFalse(ungranted.notes.isEmpty, "degraded silently: nothing said what was missing")
         XCTAssertNotNil(ungranted.whyNoAsYouType)
@@ -58,7 +58,7 @@ final class DegradationTests: XCTestCase {
                     let caps = capabilities(
                         trusted: trusted, detectsSecureFields: detects, observes: observes
                     )
-                    XCTAssertEqual(caps.hotkeyPath, trusted)
+                    XCTAssertEqual(caps.canCorrectSelection, trusted)
                     XCTAssertEqual(caps.asYouType, trusted && detects && observes)
                     // Unavailable always explains itself; available never does.
                     if caps.asYouType {
@@ -77,10 +77,10 @@ final class DegradationTests: XCTestCase {
         // granted side instead, which is still worth checking.
         let live = Accessibility.capabilities()
         if !live.accessibilityTrusted {
-            XCTAssertFalse(live.hotkeyPath)
+            XCTAssertFalse(live.canCorrectSelection)
             XCTAssertFalse(live.asYouType)
         }
-        XCTAssertEqual(live.hotkeyPath, live.canReadFocusedText && live.canWriteFocusedText)
+        XCTAssertEqual(live.canCorrectSelection, live.canReadFocusedText && live.canWriteFocusedText)
     }
 
     func testAsYouTypeRequiresSecureFieldDetection() {

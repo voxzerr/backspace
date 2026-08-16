@@ -21,13 +21,26 @@ public enum Vocabulary {
         "shouldnt": "shouldn't", "couldnt": "couldn't", "isnt": "isn't",
         "arent": "aren't", "wasnt": "wasn't", "werent": "weren't",
         "hasnt": "hasn't", "havent": "haven't", "hadnt": "hadn't",
-        "im": "I'm", "ive": "I've", "ill": "I'll", "id": "I'd",
+        "im": "I'm", "ive": "I've",
         "youre": "you're", "youve": "you've", "youll": "you'll",
         "theyre": "they're", "theyve": "they've", "theyll": "they'll",
-        "were": nil,  // ambiguous with the past tense — leave it alone
         "thats": "that's", "whats": "what's", "heres": "here's",
-        "theres": "there's", "whos": "who's", "lets": "let's",
+        "theres": "there's", "whos": "who's",
         "aint": "ain't", "yall": "y'all", "wanna": "want to",
+
+        // Recognised and deliberately declined. Every one of these is a real,
+        // common English word far more often than it is a missing apostrophe,
+        // and only meaning tells the two apart:
+        //
+        //   he is ill today        not  he is I'll today
+        //   the user id is here    not  the user I'd is here
+        //   she lets me drive      not  she let's me drive
+        //   we were going          not  we we're going
+        //
+        // They are listed rather than omitted because `protectedWords` unions
+        // these keys — being in the table is what stops the spell pass having
+        // an opinion about them too.
+        "ill": nil, "id": nil, "lets": nil, "were": nil,
     ]
 
     /// Words that always carry a specific capitalisation.
@@ -42,9 +55,12 @@ public enum Vocabulary {
         "monday": "Monday", "tuesday": "Tuesday", "wednesday": "Wednesday",
         "thursday": "Thursday", "friday": "Friday", "saturday": "Saturday",
         "sunday": "Sunday",
-        // months (no "may")
-        "january": "January", "february": "February", "march": "March",
-        "april": "April", "june": "June", "july": "July", "august": "August",
+        // Months, minus every one that is also an ordinary word. `may`,
+        // `march` and `august` are a modal verb, a verb, and an adjective
+        // respectively, and all three are more common in those senses than as
+        // dates — "we march forward" must not become "we March forward".
+        "january": "January", "february": "February",
+        "april": "April", "june": "June", "july": "July",
         "september": "September", "october": "October",
         "november": "November", "december": "December",
         // languages, places, companies

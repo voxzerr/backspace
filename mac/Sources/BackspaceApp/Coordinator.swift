@@ -150,6 +150,126 @@ final class Coordinator {
         }
     }
 
+    // MARK: - Model-backed correction (clean / polish)
+
+    /// Correct the selection offline, then run the model pass the current mode
+    /// asks for.
+    ///
+    /// The model never sees protected content: the text is masked first, and
+    /// every marker must come back in the same order or the whole result is
+    /// discarded. Offline output is the floor — a rejected or unreachable
+    /// model degrades to `fix` rather than failing, which is the same contract
+    /// the Python engine had and the reason its `note` field exists.
+    func refineSelection(using client: ClaudeClient) async {
+        let mode = Settings.current.mode
+        guard mode.needsModel else {
+            correctSelection()
+            return
+        }
+        guard let field = FocusReader.current() else {
+            onRefusal?("select some text first")
+            return
+        }
+        if let refusal = explicitRefusal(for: field) {
+            onRefusal?(refusal)
+            return
+        }
+
+        let target = field.selection.length > 0
+            ? field.selection
+            : NSRange(location: 0, length: (field.text as NSString).length)
+        guard target.length > 0 else {
+            onRefusal?("select some text first")
+            return
+        }
+
+        let source = (field.text as NSString).substring(with: target)
+        let offline = corrector.fix(source)
+
+        let masking = Masking()
+        let masked = masking.mask(offline.text)
+        let system = mode == .clean ? Prompts.clean : Prompts.polish
+
+        var finalText = offline.text
+        var usedModel = false
+        var note = ""
+
+        do {
+            let raw = try await client.complete(
+                system: system + "\n\nPreserve any \u{E000}N\u{E001} markers character for character.",
+                user: masked.text,
+                effort: .low
+            )
+            switch ModelOutput.vet(
+                raw,
+                against: masked.text,
+                expectedMarkers: masking.markersInOrder(in: masked.text)
+            ) {
+            case .success(let vetted):
+                finalText = masking.unmask(vetted, vault: masked.vault)
+                usedModel = true
+            case .failure(let rejection):
+                note = "offline only — \(rejection.describe)"
+            }
+        } catch {
+            note = "offline only — \(String(describing: error))"
+        }
+
+        guard finalText != source else {
+            onCorrection?(CorrectionResult(text: source, note: note))
+            return
+        }
+        guard let live = FocusReader.current(), live.text == field.text else {
+            onRefusal?("the text changed while refining — nothing was replaced")
+            return
+        }
+
+        isApplying = true
+        defer { isApplying = false }
+        do {
+            try FieldWriter.replace(range: target, with: finalText, in: live)
+            onCorrection?(CorrectionResult(
+                text: finalText,
+                changes: offline.changes.isEmpty && usedModel
+                    ? [Change(before: source, after: finalText, reason: .model)]
+                    : offline.changes,
+                usedModel: usedModel,
+                note: note
+            ))
+        } catch {
+            onRefusal?(String(describing: error))
+        }
+    }
+
+    // MARK: - Gates for explicitly-invoked actions
+
+    /// The gates that apply to anything the person asks for by menu or hotkey.
+    ///
+    /// The as-you-type path runs the full `Gates.evaluate` chain. Explicit
+    /// actions skip only the gates about typing rhythm — idle time and
+    /// mid-sentence focus moves are meaningless when someone just picked a
+    /// menu item — but every gate about *where the text is going* still
+    /// applies, and so does every gate about where it is going *to*.
+    ///
+    /// This exists as one function because the alternative already failed:
+    /// each explicit path grew its own ad-hoc checks, and `expandPrompt` —
+    /// the only path that sends text off the machine — ended up with the
+    /// fewest of them.
+    private func explicitRefusal(for field: FocusedField) -> String? {
+        if field.isSecure.blocks {
+            return "that looks like a password field"
+        }
+        if Accessibility.secureInputActive.blocks {
+            return "secure input is active"
+        }
+        if field.app.matches(Settings.current.blocklist).blocks {
+            return field.app.known
+                ? "\(field.app.name) is on your blocklist"
+                : "couldn't identify the front app"
+        }
+        return nil
+    }
+
     // MARK: - Prompt expansion
 
     /// Turn the prompt under the cursor into a brief.
@@ -165,8 +285,12 @@ final class Coordinator {
             onRefusal?("click into a prompt box first")
             return
         }
-        if field.isSecure.blocks {
-            onRefusal?("that looks like a password field")
+        // Run every destination gate *before* the network call, not after.
+        // This is the only path that sends the field's contents off the
+        // machine, so a refusal that arrives after the request has left is
+        // not a refusal.
+        if let refusal = explicitRefusal(for: field) {
+            onRefusal?(refusal)
             return
         }
 
@@ -237,16 +361,8 @@ final class Coordinator {
             return result
         }
 
-        if field.isSecure.blocks {
-            onRefusal?("that looks like a password field")
-            return nil
-        }
-        if field.app.matches(Settings.current.blocklist).blocks {
-            onRefusal?(
-                field.app.known
-                    ? "\(field.app.name) is on your blocklist"
-                    : "couldn't identify the front app"
-            )
+        if let refusal = explicitRefusal(for: field) {
+            onRefusal?(refusal)
             return nil
         }
 
