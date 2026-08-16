@@ -15,7 +15,7 @@ import Foundation
 /// `[0, 1]` and `[1, 0]` sort identically while meaning opposite things.
 public enum ModelOutput {
 
-    public enum Rejection: String, Sendable {
+    public enum Rejection: String, Sendable, Error {
         case empty
         case chatty
         case lengthDrift
