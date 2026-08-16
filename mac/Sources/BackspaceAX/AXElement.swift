@@ -1,4 +1,5 @@
 import ApplicationServices
+import BackspaceCore
 import Foundation
 
 /// A safe, total wrapper over `AXUIElement`.
