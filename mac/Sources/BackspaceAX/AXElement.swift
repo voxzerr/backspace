@@ -1,4 +1,5 @@
 import ApplicationServices
+import BackspaceCore
 import Foundation
 
 /// A safe, total wrapper over `AXUIElement`.
@@ -84,11 +85,19 @@ public struct AXElement {
     /// Cheaper and more honest than reading it and interpreting a failure:
     /// an attribute that is absent is a different thing from one that is
     /// present but temporarily unreadable.
-    public func supports(_ attribute: String) -> Bool {
+    /// Does this element declare an attribute?
+    ///
+    /// Three answers, not two, and the third is the whole point. `nil` from a
+    /// read means either "the attribute is genuinely absent" or "the other
+    /// process did not answer in time", and those must not be conflated — one
+    /// is information, the other is the absence of it. Callers use this to
+    /// tell a field that *has no* subrole from a field whose subrole we
+    /// *could not read*.
+    public func supports(_ attribute: String) -> Tri {
         var names: CFArray?
         guard AXUIElementCopyAttributeNames(raw, &names) == .success,
-              let list = names as? [String] else { return false }
-        return list.contains(attribute)
+              let list = names as? [String] else { return .unknown }
+        return Tri(list.contains(attribute))
     }
 
     /// Is this attribute writable? Asked *before* we try to change anything,

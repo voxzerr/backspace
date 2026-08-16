@@ -45,7 +45,18 @@ public struct Corrector: Sendable {
         out = words(out, changes: &changes)
         out = capitals(out, changes: &changes)
 
-        return CorrectionResult(text: masking.unmask(out, vault: masked.vault), changes: changes)
+        // Unmask the change list too, not just the text. A `Change` carrying a
+        // raw U+E000 marker would put a private-use codepoint in front of the
+        // user the moment anything renders the before/after — and this file's
+        // own contract is that a surviving marker is unambiguously our bug.
+        let restored = changes.map {
+            Change(
+                before: masking.unmask($0.before, vault: masked.vault),
+                after: masking.unmask($0.after, vault: masked.vault),
+                reason: $0.reason
+            )
+        }
+        return CorrectionResult(text: masking.unmask(out, vault: masked.vault), changes: restored)
     }
 
     // MARK: - Spacing
@@ -79,7 +90,17 @@ public struct Corrector: Sendable {
 
     // MARK: - Words
 
-    private static let wordPattern = Pattern(#"[A-Za-z][A-Za-z']*"#)
+    /// Every character macOS might have put where you typed an apostrophe.
+    ///
+    /// U+2019 is the important one: "smart quotes" is on by default in every
+    /// field this app targets, so by the time we see the text the straight
+    /// quote is usually gone. A tokenizer that knows only U+0027 splits
+    /// `doesn't` into `doesn` + `t`, and then the "it has an apostrophe, we
+    /// already handled it" guard never fires and the stem goes to the
+    /// spellchecker as a misspelling.
+    static let apostrophes: Set<Character> = ["'", "\u{2019}", "\u{02BC}"]
+
+    private static let wordPattern = Pattern("[A-Za-z][A-Za-z'\u{2019}\u{02BC}]*")
 
     private func words(_ text: String, changes: inout [Change]) -> String {
         Self.wordPattern.replacingMatches(in: text) { groups in
@@ -122,7 +143,7 @@ public struct Corrector: Sendable {
     /// dictionary does not know but a person at a computer types daily.
     private func isCorrectable(_ word: String, lowercased low: String) -> Bool {
         guard word.count >= 3 else { return false }
-        guard !word.contains("'") else { return false }
+        guard !word.contains(where: { Self.apostrophes.contains($0) }) else { return false }
         guard word.allSatisfy({ $0.isLetter }) else { return false }
         guard !isAllUppercase(word) else { return false }
         guard !word.dropFirst().contains(where: { $0.isUppercase }) else { return false }

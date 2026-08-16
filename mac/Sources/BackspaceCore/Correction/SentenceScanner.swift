@@ -41,6 +41,13 @@ public struct SentenceScanner: Sendable {
         let lastCharacter = Character(UnicodeScalar(ns.character(at: end - 1)) ?? " ")
         guard Self.terminators.contains(lastCharacter) else { return nil }
 
+        // A terminator with a letter or digit hard against it is *inside* a
+        // token, not at the end of a sentence: the dot in example.com, in
+        // report.pdf, in 3.5. Without this the scanner hands the corrector
+        // half a hostname and "check example.com" comes back as
+        // "Check example. Com".
+        if isInsideToken(in: ns, terminatorAt: end - 1) { return nil }
+
         // An ellipsis is a pause, not an ending. "Hmm..." is still in progress.
         if end >= 2, ns.character(at: end - 2) == ns.character(at: end - 1) { return nil }
 
@@ -49,10 +56,32 @@ public struct SentenceScanner: Sendable {
 
         // A "sentence" of one or two characters is punctuation, not prose.
         let range = NSRange(location: start, length: end - start)
+        // UTF-16 length, not grapheme count: everything else in this file is
+        // in UTF-16 units because that is what the Accessibility API speaks,
+        // and mixing the two here is how an emoji makes the guard disagree
+        // with the range it is guarding.
         let candidate = ns.substring(with: range).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard candidate.count > 2 else { return nil }
+        guard (candidate as NSString).length > 2 else { return nil }
 
         return range
+    }
+
+    /// Is the terminator at `position` inside a token rather than ending a
+    /// sentence?
+    ///
+    /// The dot in `example.com`, `report.pdf` and `3.5` all have a letter or
+    /// digit hard against them. Without this, typing `check example.com for
+    /// details.` hands the corrector the fragment `com for details.` — the
+    /// scanner having cut the sentence in the middle of a hostname — and it
+    /// comes back as `Com for details.`
+    ///
+    /// Applied in both directions: to the terminator at the caret, and to
+    /// every one passed while scanning backwards for the start.
+    private func isInsideToken(in ns: NSString, terminatorAt position: Int) -> Bool {
+        let after = position + 1
+        guard after < ns.length else { return false }
+        let following = UnicodeScalar(ns.character(at: after)) ?? " "
+        return CharacterSet.alphanumerics.contains(following)
     }
 
     /// Scan backwards for the start of the sentence containing `index`.
@@ -64,7 +93,8 @@ public struct SentenceScanner: Sendable {
         while cursor > 0 {
             let scalar = UnicodeScalar(ns.character(at: cursor - 1)) ?? " "
             let character = Character(scalar)
-            if Self.terminators.contains(character) || character == "\n" {
+            if character == "\n" { break }
+            if Self.terminators.contains(character), !isInsideToken(in: ns, terminatorAt: cursor - 1) {
                 break
             }
             cursor -= 1

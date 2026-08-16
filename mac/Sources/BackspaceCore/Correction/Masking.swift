@@ -25,8 +25,18 @@ public struct Masking: Sendable {
             #"\b[\w.+-]+@[\w-]+\.[\w.]+\b"#,      // emails
             #"[@#][\w-]+"#,                       // @handles, #tags
             "`[^`]*`",                            // inline code
-            // filenames with a known code/config extension
-            #"\b[\w-]+\.(?:py|js|ts|tsx|jsx|json|md|sh|css|html|yml|yaml|toml|env|swift|rs|go|rb|java|kt|c|h|cpp|sql)\b"#,
+            // Hostnames and filenames.
+            //
+            // Deliberately a LIST, not a shape. `example.com` and `works.we`
+            // are structurally identical — a shape-based rule protects the
+            // run-on sentence "that works.we should ship it" from ever being
+            // split, which is a correction people actually want. Only a real
+            // TLD or a real extension tells the two apart.
+            //
+            // The previous list covered code and config extensions only, so
+            // "the report.pdf is ready" came out as "The report. Pdf is ready".
+            #"\b[\w-]+\.(?:com|net|org|io|co|dev|app|ai|xyz|me|tv|cc|info|biz|uk|us|ca|de|fr|jp|au|nz|in|br|edu|gov|mil)\b(?![\w-])"#,
+            #"\b[\w-]+\.(?:py|js|ts|tsx|jsx|json|md|sh|css|html|htm|yml|yaml|toml|env|swift|rs|go|rb|java|kt|c|h|cpp|sql|pdf|png|jpg|jpeg|gif|svg|csv|txt|doc|docx|xls|xlsx|ppt|pptx|zip|tar|gz|mp4|mov|mp3)\b"#,
             #"[\w.~-]*/[\w./-]+"#,                // paths, relative or absolute
             #"\b[\w-]+\(\)"#,                     // func()
             #"\b\d[\d,.:/-]*\w*\b"#,              // numbers, times, versions
@@ -77,5 +87,14 @@ public struct Masking: Sendable {
     /// no additions, no losses, no renumbering.
     public func markers(in text: String) -> [String] {
         Self.placeholderPattern.allMatches(in: text).sorted()
+    }
+
+    /// Every marker present, in the order they appear.
+    ///
+    /// The ordered form is the one that can actually catch a model renumbering
+    /// markers: sorted, `[0, 1]` and `[1, 0]` compare equal while meaning that
+    /// two protected spans swapped places.
+    public func markersInOrder(in text: String) -> [String] {
+        Self.placeholderPattern.allMatches(in: text)
     }
 }

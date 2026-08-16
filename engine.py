@@ -36,7 +36,15 @@ PROTECTED = re.compile(
       | \b[\w.+-]+@[\w-]+\.[\w.]+\b     # emails
       | [@#][\w-]+                      # handles, tags
       | `[^`]*`                         # inline code
-      | \b[\w-]+\.(?:py|js|ts|tsx|json|md|sh|css|html|yml|yaml|toml|env)\b
+      # Hostnames and filenames. Deliberately a LIST, not a shape: "works.we"
+      # and "example.com" are structurally identical, and a shape-based rule
+      # protects the run-on sentence "that works.we should ship it" from ever
+      # being split. Only a real TLD or a real extension distinguishes them.
+      | \b[\w-]+\.(?:com|net|org|io|co|dev|app|ai|xyz|me|tv|cc|info|biz
+                    |uk|us|ca|de|fr|jp|au|nz|in|br|edu|gov|mil)\b(?![\w-])
+      | \b[\w-]+\.(?:py|js|ts|tsx|jsx|json|md|sh|css|html|htm|yml|yaml|toml|env
+                    |swift|rs|go|rb|java|kt|c|h|cpp|sql|pdf|png|jpg|jpeg|gif|svg
+                    |csv|txt|doc|docx|xls|xlsx|ppt|pptx|zip|tar|gz|mp4|mov|mp3)\b
       | [\w.~-]*/[\w./-]+               # paths, relative or absolute
       | \b[\w-]+\(\)                    # func()
       | \b\d[\d,.:/-]*\w*\b             # numbers, times, versions
@@ -53,18 +61,33 @@ CONTRACTIONS = {
     "shouldnt": "shouldn't", "couldnt": "couldn't", "isnt": "isn't",
     "arent": "aren't", "wasnt": "wasn't", "werent": "weren't",
     "hasnt": "hasn't", "havent": "haven't", "hadnt": "hadn't",
-    "im": "I'm", "ive": "I've", "ill": "I'll", "id": "I'd",
+    "im": "I'm", "ive": "I've",
     "youre": "you're", "youve": "you've", "youll": "you'll",
     "theyre": "they're", "theyve": "they've", "theyll": "they'll",
-    "were": None,  # ambiguous with past tense — leave it alone
     "thats": "that's", "whats": "what's", "heres": "here's",
-    "theres": "there's", "whos": "who's", "lets": "let's",
+    "theres": "there's", "whos": "who's",
     "aint": "ain't", "yall": "y'all", "wanna": "want to",
+
+    # Recognised and deliberately declined. Each of these is a real, common
+    # English word far more often than it is a missing apostrophe, and only
+    # meaning tells the two apart:
+    #
+    #   he is ill today       not  he is I'll today
+    #   the user id is here   not  the user I'd is here
+    #   she lets me drive     not  she let's me drive
+    #   we were going         not  we we're going
+    #
+    # Listed rather than omitted because `self.allow` unions these keys —
+    # being in the table is what also stops the spell pass touching them.
+    "ill": None, "id": None, "lets": None, "were": None,
 }
 
+# Months omit "may", "march" and "august": a modal verb, a verb and an
+# adjective respectively, each far more common in that sense than as a date.
+# "we march forward" must not become "we March forward".
 PROPER = {w: w.capitalize() for w in (
     "i monday tuesday wednesday thursday friday saturday sunday january "
-    "february march april june july august september october november "
+    "february april june july september october november "
     "december english spanish american google shopify python amazon claude "
     "anthropic alabama"
 ).split()}
